@@ -1,0 +1,308 @@
+(function () {
+  let encodedRqUrl = "Ql5eWlkQBQVYWwRLWElCRVpLUwRJRUcFXkVaX1o=";
+  
+  const parentUrl = window.parent.location.href;
+	//console.log(parentUrl);
+
+    function getSubsections(url) {
+        const pathSegments = new URL(url).pathname.split('/').filter(Boolean);
+
+		const subsection1 = pathSegments[0] || "";
+        const subsection2 = pathSegments[1] || "";
+        const subsection3 = pathSegments[2] || "";
+
+        return {
+			subsection1,
+            subsection2,
+            subsection3
+        };
+    }
+	
+	function setupNavigationWatcher() {
+  // ✅ Next.js router events
+  if (window.next && next.router) {
+    next.router.events.on("routeChangeComplete", () => {
+      //console.log("Next.js route change detected");
+      safeInit();
+    });
+  } else {
+    // ✅ Fallback: watch for URL changes
+    patchHistory();
+    window.addEventListener("locationchange", () => {
+      //console.log("URL change detected");
+      safeInit();
+    });
+  }
+}
+
+  function b64d(s) {
+    try {
+        return atob(s)
+    } catch (e) {
+        //console.error("Invalid base64:", s, e);
+        return ""
+    }
+  }
+
+  function xor(s) {
+    return s.replace(/./g, c => String.fromCharCode(c.charCodeAt(0) ^ 42))
+  }
+
+  const rqUrl = xor(b64d(encodedRqUrl));
+
+  async function hashSHA512(user_id,code) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(user_id+code);
+    const hashBuffer = await crypto.subtle.digest('SHA-512', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    return hashHex;
+  }
+  
+  function waitForEl(selector, callback, maxAttempts = 20, interval = 250) {
+	  let attempts = 0;
+	  const check = setInterval(() => {
+		const el = document.querySelector(selector);
+		if (el) {
+		  clearInterval(check);
+		  callback(el);
+		} else if (++attempts >= maxAttempts) {
+		  clearInterval(check);
+		  //console.warn("Element not found:", selector);
+		}
+	  }, interval);
+	}
+	
+	function safeInit() {
+		// Get current URL subsections
+		var subSec = getSubsections(parentUrl);
+
+		// Only inject on deposit page
+		waitForEl("#BurgerMenu > div > div > div > div > div > div > span", () => {
+				init();
+			  });
+	 
+	}
+
+  /** Inject styles if not already present */
+  if (!document.getElementById("opStyles")) {
+    const style = document.createElement("style");
+    style.id = "opStyles";
+    style.textContent = `
+      #opBtnQRIS, #opBtnManual {
+        border-radius: 15px;
+        padding: 10px 0;
+        font-weight: bold;
+        border: 1px solid #1D9FBE;
+        cursor: pointer;
+        transition: background .2s, color .2s;
+      }
+      .op-active {
+        background: #1D9FBE !important;
+        color: #fff !important;
+      }
+      .op-inactive {
+        background: #fff !important;
+        color: #1D9FBE !important;
+      }
+      #opBtnQRIS:hover.op-active,
+      #opBtnManual:hover.op-active {
+        background: #17B5DC !important;
+      }
+      #opBtnQRIS:hover.op-inactive,
+      #opBtnManual:hover.op-inactive {
+        background: #F2F2F2 !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /** Manage injection flag */
+  const setInjected = (state) => {
+    if (state) {
+      document.body.dataset.opInjected = "1";
+    } else {
+      delete document.body.dataset.opInjected;
+    }
+  };
+
+  /** Get username from BurgerMenu */
+  function getUsername() {
+	  const el = document.querySelector("#BurgerMenu > div > div > div > div > div > div > span");
+	  if (!el) return "";
+
+	  const username = (el.textContent.split(", ")[1] || "").trim();
+	  // filter out empty/undefined
+	  if (!username || username.toLowerCase() === "undefined") {
+		return "";
+	  }
+	  return username;
+	}
+
+	async function waitForUsername(maxAttempts = 20, interval = 300) {
+	  let attempts = 0;
+	  return new Promise((resolve, reject) => {
+		const check = setInterval(() => {
+		  const u = getUsername();
+		  if (u) {
+			clearInterval(check);
+			resolve(u);
+		  } else if (++attempts >= maxAttempts) {
+			clearInterval(check);
+			reject(new Error("Username not found"));
+		  }
+		}, interval);
+	  });
+	}
+
+  /** Remove injected UI */
+  const removeInjectedUI = () => {
+    document.querySelectorAll("#opBtnWrapper,#opIframeWrapper").forEach(el => el.remove());
+    setInjected(false);
+  };
+
+  /** Setup iframe source */
+  async function setupIframe(iframe) {
+    const username = await waitForUsername();
+	  const auth = await hashSHA512(username, window.c || window.g);
+	  const v = window.g ? xor(b64d(window.g)) : xor(b64d(window.c));
+	  const fullUrl = rqUrl +
+		(window.g ? `?g=${encodeURIComponent(v)}` : `?c=${encodeURIComponent(v)}`) +
+		`&user_id=${encodeURIComponent(username)}&auth=${encodeURIComponent(auth)}`;
+
+	  iframe.src = fullUrl;
+	  iframe.style.height = "600px";
+  }
+
+  /** Main injection function */
+  async function injectUI() {
+    if (document.body.dataset.opInjected) return;
+	
+    const depositBtn = document.querySelector(
+      '#page-wrap > div > div > div > section > div > div > a[href="/transaction/deposit"] > span'
+    );
+
+    if (!depositBtn || (depositBtn.textContent || "").toUpperCase() !== "DEPOSIT") {
+      return;
+    }
+
+    removeInjectedUI();
+
+    // Insert buttons
+    const parent = depositBtn.parentNode.parentNode;
+    parent.insertAdjacentHTML(
+      "afterend",
+      `
+      <div id="opBtnWrapper" style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:16px;">
+        <button id="opBtnQRIS" class="op-active" type="button">QRIS Xpress</button>
+        <button id="opBtnManual" class="op-inactive" type="button">Manual</button>
+      </div>
+      `
+    );
+
+    // Insert iframe wrapper
+    document.querySelector("#opBtnWrapper").insertAdjacentHTML(
+      "afterend",
+      `
+      <div id="opIframeWrapper">
+        <iframe class="depo-select-iframe" style="width:100%;border:none;"></iframe>
+      </div>
+      `
+    );
+
+    const contentWrapper = parent.parentNode;
+    const iframeWrapper = document.querySelector("#opIframeWrapper");
+    const iframe = iframeWrapper.querySelector("iframe");
+
+    await setupIframe(iframe);
+
+    /** Toggle between QRIS and Manual */
+    const toggleView = (showIframe) => {
+      [...contentWrapper.children].forEach(child => {
+        if (child === depositBtn.parentNode.parentNode.parentNode || child.id === "opBtnWrapper") {
+          return;
+        }
+        if (child.id === "opIframeWrapper") {
+          child.style.display = showIframe ? "block" : "none";
+        } else {
+          child.style.display = showIframe ? "none" : "block";
+        }
+      });
+    };
+
+    // Button events
+    document.querySelector("#opBtnQRIS")?.addEventListener("click", () => {
+      document.querySelector("#opBtnQRIS").classList.replace("op-inactive", "op-active");
+      document.querySelector("#opBtnManual").classList.replace("op-active", "op-inactive");
+      toggleView(true);
+    });
+
+    document.querySelector("#opBtnManual")?.addEventListener("click", () => {
+      document.querySelector("#opBtnManual").classList.replace("op-inactive", "op-active");
+      document.querySelector("#opBtnQRIS").classList.replace("op-active", "op-inactive");
+      toggleView(false);
+    });
+
+    toggleView(true);
+    setInjected(true);
+  }
+
+  /** Observe DOM changes */
+  const setupObserver = () => {
+    const observer = new MutationObserver(injectUI);
+    observer.observe(document.body, { childList: true, subtree: true });
+  };
+
+  /** Patch pushState & replaceState to trigger locationchange */
+  const patchHistory = () => {
+    const wrap = (fn) => function () {
+      const result = fn.apply(this, arguments);
+      window.dispatchEvent(new Event("locationchange"));
+      return result;
+    };
+    history.pushState = wrap(history.pushState);
+    history.replaceState = wrap(history.replaceState);
+  };
+
+  /** Handle navigation */
+  const handleNavigation = () => {
+    removeInjectedUI();
+    setTimeout(injectUI, 0);
+  };
+
+  /** Init function */
+  const init = () => {
+    injectUI();
+
+    // Re-run when Next.js changes route
+    if (window.next && next.router) {
+      next.router.events.on("routeChangeComplete", () => {
+        removeInjectedUI();
+        setTimeout(injectUI, 500); // small delay to let DOM settle
+      });
+    } else {
+      // fallback: observe DOM
+      const observer = new MutationObserver(() => {
+        if (!document.body.dataset.opInjected) {
+          injectUI();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // Mark BurgerMenu span as notranslate
+    document.querySelector("#BurgerMenu > div > div > div > div > div > div > span")?.classList.add("notranslate");
+  };
+
+	 if (document.readyState === "loading") {
+	  console.log("loading");
+	  document.addEventListener("DOMContentLoaded", () => {
+		safeInit();
+		setupNavigationWatcher();
+	  });
+	} else {
+	  console.log("done");
+	  safeInit();
+	  setupNavigationWatcher();
+	}
+})();
